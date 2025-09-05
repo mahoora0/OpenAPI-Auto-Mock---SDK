@@ -13,7 +13,7 @@ export function generateSDK(spec: OpenAPISpec, options: SDKOptions): string {
   const sourceFile = project.createSourceFile('sdk.ts', '', { overwrite: true });
 
   // 에러 타입 정의 추가
-  addErrorTypes(sourceFile, spec);
+  addErrorTypes(sourceFile);
 
   // 타입 정의 추가
   addTypeDefinitions(sourceFile, spec);
@@ -30,10 +30,11 @@ export function generateSDK(spec: OpenAPISpec, options: SDKOptions): string {
 /**
  * 에러 타입들을 추가합니다.
  */
-function addErrorTypes(sourceFile: any, spec: OpenAPISpec) {
+function addErrorTypes(sourceFile: any) {
   // APIError 클래스
   sourceFile.addClass({
     name: 'APIError',
+    typeParameters: [{ name: 'T = unknown' }],
     extends: 'Error',
     properties: [
       {
@@ -48,7 +49,7 @@ function addErrorTypes(sourceFile: any, spec: OpenAPISpec) {
       },
       {
         name: 'data',
-        type: 'any',
+        type: 'T',
         isReadonly: true,
       },
     ],
@@ -57,34 +58,17 @@ function addErrorTypes(sourceFile: any, spec: OpenAPISpec) {
         parameters: [
           { name: 'status', type: 'number' },
           { name: 'statusText', type: 'string' },
-          { name: 'data', type: 'any', hasQuestionToken: true },
+          { name: 'data', type: 'T', hasQuestionToken: true },
         ],
         statements: `
           super(\`HTTP \${status}: \${statusText}\`);
           this.name = 'APIError';
           this.status = status;
           this.statusText = statusText;
-          this.data = data;
+          this.data = data as T;
         `,
       },
     ],
-    isExported: true,
-  });
-
-  // 에러 응답 타입들 생성
-  const errorTypes = generateErrorTypes(spec);
-  if (errorTypes.length > 0) {
-    sourceFile.addTypeAlias({
-      name: 'APIErrorResponse',
-      type: errorTypes.join(' | '),
-      isExported: true,
-    });
-  }
-
-  // API 응답 타입
-  sourceFile.addTypeAlias({
-    name: 'APIResponse',
-    type: 'unknown',
     isExported: true,
   });
 
@@ -100,44 +84,6 @@ function addErrorTypes(sourceFile: any, spec: OpenAPISpec) {
     `,
     isExported: true,
   });
-}
-
-/**
- * OpenAPI 스펙에서 에러 응답 타입들을 생성합니다.
- */
-function generateErrorTypes(spec: OpenAPISpec): string[] {
-  const errorTypes: string[] = [];
-
-  if (!spec.paths) {
-    return errorTypes;
-  }
-
-  for (const [path, pathItem] of Object.entries(spec.paths)) {
-    if (!pathItem) continue;
-
-    const methods = ['get', 'post', 'put', 'delete', 'patch'] as const;
-
-    for (const method of methods) {
-      const operation = pathItem[method];
-      if (operation?.responses) {
-        // 4xx, 5xx 응답들을 찾아서 타입 생성
-        for (const [statusCode, response] of Object.entries(operation.responses)) {
-          const code = parseInt(statusCode);
-          if (code >= 400 && response) {
-            const responseObj = response as any;
-            if (responseObj.content?.['application/json']?.schema) {
-              const schema = responseObj.content['application/json'].schema;
-              const tsType = getTypeScriptType(schema);
-              errorTypes.push(tsType);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // 중복 제거
-  return [...new Set(errorTypes)];
 }
 
 /**
@@ -174,11 +120,13 @@ function addAPIClient(sourceFile: any, spec: OpenAPISpec, options: SDKOptions) {
     methods: [
       {
         name: 'request',
+        typeParameters: [{ name: 'T' }, { name: 'E = unknown' }],
         parameters: [
           { name: 'method', type: 'string' },
           { name: 'path', type: 'string' },
           { name: 'options', type: '{ body?: any; params?: Record<string, any>; headers?: Record<string, string> }', hasQuestionToken: true },
         ],
+        returnType: 'Promise<T>',
         statements: `
           const url = new URL(path, this.baseURL);
           if (options?.params) {
@@ -213,10 +161,10 @@ function addAPIClient(sourceFile: any, spec: OpenAPISpec, options: SDKOptions) {
             } catch {
               errorData = { message: response.statusText };
             }
-            throw new APIError(response.status, response.statusText, errorData);
+            throw new APIError<E>(response.status, response.statusText, errorData as E);
           }
 
-          return response.json();
+          return response.json() as Promise<T>;
         `,
         isAsync: true,
       },
@@ -253,7 +201,13 @@ function addAPIFunctions(sourceFile: any, spec: OpenAPISpec, options: SDKOptions
       const operation = pathItem[method];
       if (operation) {
         const functionName = generateFunctionName(operation, path, method);
-        const functionCode = generateFunction(operation, path, method, spec);
+        const functionCode = generateFunction(operation, path, method, spec, functionName);
+
+        sourceFile.addTypeAlias({
+          name: `${functionName}Error`,
+          type: functionCode.errorUnion || 'unknown',
+          isExported: true,
+        });
 
         sourceFile.addFunction({
           name: functionName,
@@ -262,6 +216,7 @@ function addAPIFunctions(sourceFile: any, spec: OpenAPISpec, options: SDKOptions
           statements: functionCode.statements,
           isExported: true,
           isAsync: true,
+          docs: [`@throws {APIError<${functionName}Error>}`],
         });
       }
     }
@@ -365,7 +320,7 @@ function generateFunctionName(operation: any, path: string, method: string): str
 /**
  * 함수 코드를 생성합니다.
  */
-function generateFunction(operation: any, path: string, method: string, spec: OpenAPISpec) {
+function generateFunction(operation: any, path: string, method: string, spec: OpenAPISpec, functionName: string) {
   const parameters: any[] = [];
   const statements: string[] = [];
 
@@ -418,24 +373,44 @@ function generateFunction(operation: any, path: string, method: string, spec: Op
       headers['${p.name}'] = String(options.headers.${p.name});
     }`).join('\n    ') || ''}
 
-    return client.request('${method.toUpperCase()}', path, {
+    return client.request<${'${successType}'}, ${functionName}Error>('${method.toUpperCase()}', path, {
       body: ${operation.requestBody ? 'body' : 'undefined'},
       params: Object.keys(queryParams).length > 0 ? queryParams : undefined,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
     });
   `);
 
-  // 반환 타입 결정
-  let returnType = 'Promise<any>';
+  // 반환 타입 결정 및 성공 타입 저장
+  let successType = 'any';
   if (operation.responses?.['200']?.content?.['application/json']?.schema) {
     const responseSchema = operation.responses['200'].content['application/json'].schema;
-    const tsType = getTypeScriptType(responseSchema);
-    returnType = `Promise<${tsType}>`;
+    successType = getTypeScriptType(responseSchema);
   }
+  const returnType = `Promise<${successType}>`;
+
+  // 에러 타입 유니온 생성
+  const errorTypes: string[] = [];
+  if (operation.responses) {
+    for (const [statusCode, response] of Object.entries(operation.responses)) {
+      const code = parseInt(statusCode);
+      if (code >= 400) {
+        const res = response as any;
+        const schema = res.content?.['application/json']?.schema;
+        if (schema) {
+          errorTypes.push(getTypeScriptType(schema));
+        }
+      }
+    }
+  }
+  const errorUnion = errorTypes.length > 0 ? errorTypes.join(' | ') : 'unknown';
+
+  // statements에서 successType 사용을 위해 템플릿 치환
+  const finalStatements = statements.join('\n').replace('${successType}', successType);
 
   return {
     parameters,
     returnType,
-    statements: statements.join('\n'),
+    statements: finalStatements,
+    errorUnion,
   };
 }
