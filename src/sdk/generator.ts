@@ -184,7 +184,11 @@ function addAPIClient(sourceFile: any, spec: OpenAPISpec, options: SDKOptions) {
           if (options?.params) {
             Object.entries(options.params).forEach(([key, value]) => {
               if (value !== undefined) {
-                url.searchParams.append(key, String(value));
+                if (Array.isArray(value)) {
+                  value.forEach(v => url.searchParams.append(key, String(v)));
+                } else {
+                  url.searchParams.append(key, String(value));
+                }
               }
             });
           }
@@ -388,10 +392,10 @@ function generateFunction(operation: any, path: string, method: string, spec: Op
     });
   }
 
-  // 쿼리 파라미터들을 위한 options 파라미터
+  // 쿼리 및 헤더 파라미터들을 위한 options 파라미터
   parameters.push({
     name: 'options',
-    type: '{ params?: Record<string, any> }',
+    type: '{ params?: Record<string, any>; headers?: Record<string, string> }',
     hasQuestionToken: true,
   });
 
@@ -402,16 +406,16 @@ function generateFunction(operation: any, path: string, method: string, spec: Op
   statements.push(`
     const path = \`${pathWithParams}\`;
     const queryParams: Record<string, any> = {};
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...(options?.headers || {}) };
 
     ${queryParams.map((p: any) => `
     if (options?.params?.${p.name} !== undefined) {
-      queryParams.${p.name} = options.params.${p.name};
+      queryParams['${p.name}'] = options.params.${p.name};
     }`).join('\n    ')}
 
     ${operation.parameters?.filter((p: any) => p.in === 'header').map((p: any) => `
     if (options?.headers?.${p.name} !== undefined) {
-      headers.${p.name} = String(options.headers.${p.name});
+      headers['${p.name}'] = String(options.headers.${p.name});
     }`).join('\n    ') || ''}
 
     return client.request('${method.toUpperCase()}', path, {
