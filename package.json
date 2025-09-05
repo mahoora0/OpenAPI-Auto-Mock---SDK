@@ -1,0 +1,36 @@
+{
+  "name": "oam-cli",
+  "version": "0.1.0",
+  "description": "OpenAPI Auto Mock & SDK Generator",
+  "main": "dist/index.js",
+  "bin": {
+    "oam": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "openapi",
+    "mock",
+    "sdk",
+    "typescript",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@apidevtools/swagger-parser": "^10.1.0",
+    "@faker-js/faker": "^8.4.0",
+    "@fastify/cors": "^11.1.0",
+    "commander": "^12.0.0",
+    "fastify": "^4.26.0",
+    "ts-morph": "^21.0.0"
+  }
+}
