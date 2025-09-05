@@ -101,12 +101,27 @@ function registerOperationRoute(
   spec: OpenAPISpec,
   mockGenerator: MockGenerator
 ) {
+  // OpenAPI 파라미터들을 Fastify schema로 변환
+  const schema = buildFastifySchema(operation, spec);
+
   // Fastify 라우터 등록
   app.route({
     method: method.toUpperCase() as any, // Fastify HTTPMethods 타입으로 캐스팅
     url: convertOpenAPIPathToFastify(path),
+    schema: schema,
     handler: async (request, reply) => {
       try {
+        // POST/PUT/PATCH의 경우 요청 body 검증
+        if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
+          const validationError = validateRequestBody(operation, request);
+          if (validationError) {
+            return reply.code(400).send({
+              error: 'Bad Request',
+              message: validationError
+            });
+          }
+        }
+
         // 응답 스키마 선택 (기본적으로 200 응답 사용)
         const responseSchema = selectResponseSchema(operation);
 
@@ -127,6 +142,84 @@ function registerOperationRoute(
   });
 
   console.log(`📍 Registered route: ${method.toUpperCase()} ${path}`);
+}
+
+/**
+ * 요청 body를 검증합니다.
+ */
+function validateRequestBody(operation: OpenAPIV3.OperationObject, request: any): string | null {
+  if (!operation.requestBody) {
+    return null; // requestBody가 없으면 검증하지 않음
+  }
+
+  const requestBody = operation.requestBody as OpenAPIV3.RequestBodyObject;
+  const body = request.body;
+
+  // 필수 requestBody인 경우 body가 있는지 확인
+  if (requestBody.required && (!body || Object.keys(body).length === 0)) {
+    return 'Request body is required';
+  }
+
+  // content-type에 따른 기본적인 검증
+  if (requestBody.content?.['application/json']) {
+    const schema = requestBody.content['application/json'].schema as OpenAPIV3.SchemaObject;
+
+    // 간단한 필수 필드 검증
+    if (schema?.required) {
+      for (const requiredField of schema.required) {
+        if (!(requiredField in body)) {
+          return `Missing required field: ${requiredField}`;
+        }
+      }
+    }
+  }
+
+  return null; // 검증 통과
+}
+
+/**
+ * OpenAPI operation의 파라미터들을 Fastify schema로 변환합니다.
+ */
+function buildFastifySchema(operation: OpenAPIV3.OperationObject, spec: OpenAPISpec) {
+  const schema: any = {};
+
+  if (!operation.parameters) {
+    return schema;
+  }
+
+  // 파라미터들을 그룹화
+  const params: any = {};
+  const querystring: any = {};
+  const headers: any = {};
+
+  for (const param of operation.parameters as OpenAPIV3.ParameterObject[]) {
+    const paramSchema = param.schema as OpenAPIV3.SchemaObject;
+
+    switch (param.in) {
+      case 'path':
+        params[param.name] = paramSchema;
+        break;
+      case 'query':
+        querystring[param.name] = paramSchema;
+        break;
+      case 'header':
+        headers[param.name] = paramSchema;
+        break;
+    }
+  }
+
+  // Fastify schema에 적용
+  if (Object.keys(params).length > 0) {
+    schema.params = params;
+  }
+  if (Object.keys(querystring).length > 0) {
+    schema.querystring = querystring;
+  }
+  if (Object.keys(headers).length > 0) {
+    schema.headers = headers;
+  }
+
+  return schema;
 }
 
 /**

@@ -147,6 +147,11 @@ export class MockGenerator {
   private generateArray(schema: OpenAPIV3.SchemaObject, path: string = ''): any[] {
     const minItems = schema.minItems || 1;
     const maxItems = schema.maxItems || 5;
+
+    // 배열 길이도 결정론적으로 생성하기 위해 경로 기반 시드 사용
+    const lengthPath = path ? `${path}.length` : 'length';
+    const lengthSeed = this.generateSeedForPath(lengthPath);
+    faker.seed(lengthSeed);
     const itemCount = faker.number.int({ min: minItems, max: Math.min(maxItems, 10) });
 
     const result: any[] = [];

@@ -129,6 +129,10 @@ class MockGenerator {
     generateArray(schema, path = '') {
         const minItems = schema.minItems || 1;
         const maxItems = schema.maxItems || 5;
+        // 배열 길이도 결정론적으로 생성하기 위해 경로 기반 시드 사용
+        const lengthPath = path ? `${path}.length` : 'length';
+        const lengthSeed = this.generateSeedForPath(lengthPath);
+        faker_1.faker.seed(lengthSeed);
         const itemCount = faker_1.faker.number.int({ min: minItems, max: Math.min(maxItems, 10) });
         const result = [];
         // ArraySchemaObject 타입인지 확인
