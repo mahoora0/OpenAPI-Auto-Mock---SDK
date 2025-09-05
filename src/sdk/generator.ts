@@ -13,7 +13,7 @@ export function generateSDK(spec: OpenAPISpec, options: SDKOptions): string {
   const sourceFile = project.createSourceFile('sdk.ts', '', { overwrite: true });
 
   // 에러 타입 정의 추가
-  addErrorTypes(sourceFile);
+  addErrorTypes(sourceFile, spec);
 
   // 타입 정의 추가
   addTypeDefinitions(sourceFile, spec);
@@ -30,7 +30,7 @@ export function generateSDK(spec: OpenAPISpec, options: SDKOptions): string {
 /**
  * 에러 타입들을 추가합니다.
  */
-function addErrorTypes(sourceFile: any) {
+function addErrorTypes(sourceFile: any, spec: OpenAPISpec) {
   // APIError 클래스
   sourceFile.addClass({
     name: 'APIError',
@@ -71,7 +71,17 @@ function addErrorTypes(sourceFile: any) {
     isExported: true,
   });
 
-  // 에러 타입 union
+  // 에러 응답 타입들 생성
+  const errorTypes = generateErrorTypes(spec);
+  if (errorTypes.length > 0) {
+    sourceFile.addTypeAlias({
+      name: 'APIErrorResponse',
+      type: errorTypes.join(' | '),
+      isExported: true,
+    });
+  }
+
+  // API 응답 타입
   sourceFile.addTypeAlias({
     name: 'APIResponse',
     type: 'unknown',
@@ -90,6 +100,44 @@ function addErrorTypes(sourceFile: any) {
     `,
     isExported: true,
   });
+}
+
+/**
+ * OpenAPI 스펙에서 에러 응답 타입들을 생성합니다.
+ */
+function generateErrorTypes(spec: OpenAPISpec): string[] {
+  const errorTypes: string[] = [];
+
+  if (!spec.paths) {
+    return errorTypes;
+  }
+
+  for (const [path, pathItem] of Object.entries(spec.paths)) {
+    if (!pathItem) continue;
+
+    const methods = ['get', 'post', 'put', 'delete', 'patch'] as const;
+
+    for (const method of methods) {
+      const operation = pathItem[method];
+      if (operation?.responses) {
+        // 4xx, 5xx 응답들을 찾아서 타입 생성
+        for (const [statusCode, response] of Object.entries(operation.responses)) {
+          const code = parseInt(statusCode);
+          if (code >= 400 && response) {
+            const responseObj = response as any;
+            if (responseObj.content?.['application/json']?.schema) {
+              const schema = responseObj.content['application/json'].schema;
+              const tsType = getTypeScriptType(schema);
+              errorTypes.push(tsType);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 중복 제거
+  return [...new Set(errorTypes)];
 }
 
 /**
@@ -129,7 +177,7 @@ function addAPIClient(sourceFile: any, spec: OpenAPISpec, options: SDKOptions) {
         parameters: [
           { name: 'method', type: 'string' },
           { name: 'path', type: 'string' },
-          { name: 'options', type: '{ body?: any; params?: Record<string, any> }', hasQuestionToken: true },
+          { name: 'options', type: '{ body?: any; params?: Record<string, any>; headers?: Record<string, string> }', hasQuestionToken: true },
         ],
         statements: `
           const url = new URL(path, this.baseURL);
@@ -145,6 +193,7 @@ function addAPIClient(sourceFile: any, spec: OpenAPISpec, options: SDKOptions) {
             method,
             headers: {
               'Content-Type': 'application/json',
+              ...options?.headers,
             },
           };
 
@@ -274,10 +323,39 @@ function generateFunctionName(operation: any, path: string, method: string): str
   }
 
   // 경로 기반 함수명 생성
-  const pathParts = path.split('/').filter(p => p && !p.startsWith('{'));
-  const baseName = pathParts.length > 0 ? pathParts[pathParts.length - 1] : 'api';
+  const pathParts = path.split('/').filter(p => p);
+  const resourceParts: string[] = [];
+  const paramParts: string[] = [];
 
-  return `${method}${baseName.charAt(0).toUpperCase()}${baseName.slice(1)}`;
+  for (const part of pathParts) {
+    if (part.startsWith('{') && part.endsWith('}')) {
+      // 경로 파라미터
+      const paramName = part.slice(1, -1);
+      paramParts.push(paramName.charAt(0).toUpperCase() + paramName.slice(1));
+    } else {
+      // 리소스 이름
+      resourceParts.push(part);
+    }
+  }
+
+  // 함수명 생성
+  let functionName = method.toLowerCase();
+  if (resourceParts.length > 0) {
+    // 마지막 리소스 이름을 추가
+    const lastResource = resourceParts[resourceParts.length - 1];
+    functionName += lastResource.charAt(0).toUpperCase() + lastResource.slice(1);
+  }
+
+  if (paramParts.length > 0) {
+    // 경로 파라미터가 있으면 By + 파라미터들 추가
+    if (paramParts.length === 1) {
+      functionName += 'By' + paramParts[0];
+    } else {
+      functionName += 'By' + paramParts.join('And');
+    }
+  }
+
+  return functionName;
 }
 
 /**
@@ -324,15 +402,22 @@ function generateFunction(operation: any, path: string, method: string, spec: Op
   statements.push(`
     const path = \`${pathWithParams}\`;
     const queryParams: Record<string, any> = {};
+    const headers: Record<string, string> = {};
 
     ${queryParams.map((p: any) => `
     if (options?.params?.${p.name} !== undefined) {
       queryParams.${p.name} = options.params.${p.name};
     }`).join('\n    ')}
 
+    ${operation.parameters?.filter((p: any) => p.in === 'header').map((p: any) => `
+    if (options?.headers?.${p.name} !== undefined) {
+      headers.${p.name} = String(options.headers.${p.name});
+    }`).join('\n    ') || ''}
+
     return client.request('${method.toUpperCase()}', path, {
       body: ${operation.requestBody ? 'body' : 'undefined'},
       params: Object.keys(queryParams).length > 0 ? queryParams : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
     });
   `);
 
