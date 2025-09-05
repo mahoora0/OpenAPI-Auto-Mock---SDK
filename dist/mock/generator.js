@@ -2,24 +2,47 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MockGenerator = void 0;
 exports.generateMockData = generateMockData;
+exports.generateMockDataWithPath = generateMockDataWithPath;
 const faker_1 = require("@faker-js/faker");
 /**
  * OpenAPI 스키마를 기반으로 Mock 데이터를 생성합니다.
  */
 class MockGenerator {
     constructor(options = {}) {
-        this.options = options;
-        // 시드 설정으로 결정성 보장
-        if (options.seed) {
-            faker_1.faker.seed(options.seed);
+        this.baseSeed = options.seed || 12345;
+    }
+    /**
+     * 경로 기반 시드를 생성합니다.
+     * 동일한 경로에는 항상 같은 데이터를 반환하지만, 다른 경로에는 다른 데이터를 생성합니다.
+     */
+    generateSeedForPath(path) {
+        // 경로를 해시하여 결정성 있는 시드를 생성
+        let hash = 0;
+        for (let i = 0; i < path.length; i++) {
+            const char = path.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // 32비트 정수로 변환
         }
+        // 기본 시드와 경로 해시를 결합
+        return Math.abs(this.baseSeed + hash);
     }
     /**
      * 스키마로부터 Mock 데이터를 생성합니다.
      */
     generate(schema) {
+        return this.generateWithSeed(schema, 'default');
+    }
+    /**
+     * 경로 기반 시드를 사용하여 스키마로부터 Mock 데이터를 생성합니다.
+     */
+    generateWithSeed(schema, path = 'default') {
         if (!schema) {
             return null;
+        }
+        // 기본 타입의 경우 경로 기반 시드 설정
+        if (schema.type !== 'object' && schema.type !== 'array') {
+            const pathSeed = this.generateSeedForPath(path);
+            faker_1.faker.seed(pathSeed);
         }
         // 기본 타입 처리
         switch (schema.type) {
@@ -29,11 +52,11 @@ class MockGenerator {
             case 'integer':
                 return this.generateNumber(schema);
             case 'boolean':
-                return faker_1.faker.datatype.boolean();
+                return faker_1.faker.datatype.boolean({ probability: 0.5 });
             case 'object':
-                return this.generateObject(schema);
+                return this.generateObject(schema, path);
             case 'array':
-                return this.generateArray(schema);
+                return this.generateArray(schema, path);
             default:
                 // 타입이 지정되지 않은 경우 기본값 반환
                 return this.generateDefaultValue(schema);
@@ -77,25 +100,33 @@ class MockGenerator {
             return faker_1.faker.number.float({ min: minimum, max: maximum, precision: 0.01 });
         }
     }
-    generateObject(schema) {
+    generateObject(schema, path = '') {
         const result = {};
         if (schema.properties) {
             for (const [key, propSchema] of Object.entries(schema.properties)) {
-                // required가 지정되지 않았거나 required에 포함된 경우에만 생성
-                if (!schema.required || schema.required.includes(key)) {
-                    result[key] = this.generate(propSchema);
+                // required가 정의되고 key가 포함되어 있으면: 필수 필드 → 항상 생성
+                const isRequired = schema.required && schema.required.includes(key);
+                if (isRequired) {
+                    // 필수 필드는 항상 생성 - 속성별 고유 경로 사용
+                    const propertyPath = path ? `${path}.${key}` : key;
+                    result[key] = this.generateWithSeed(propSchema, propertyPath);
                 }
                 else {
                     // 선택적 필드는 70% 확률로 생성
-                    if (faker_1.faker.datatype.boolean(0.7)) {
-                        result[key] = this.generate(propSchema);
+                    // 확률 계산을 위한 시드 생성 (속성 경로 기반)
+                    const probabilityPath = path ? `${path}.${key}.probability` : `${key}.probability`;
+                    const probSeed = this.generateSeedForPath(probabilityPath);
+                    faker_1.faker.seed(probSeed);
+                    if (faker_1.faker.datatype.boolean({ probability: 0.7 })) {
+                        const propertyPath = path ? `${path}.${key}` : key;
+                        result[key] = this.generateWithSeed(propSchema, propertyPath);
                     }
                 }
             }
         }
         return result;
     }
-    generateArray(schema) {
+    generateArray(schema, path = '') {
         const minItems = schema.minItems || 1;
         const maxItems = schema.maxItems || 5;
         const itemCount = faker_1.faker.number.int({ min: minItems, max: Math.min(maxItems, 10) });
@@ -104,7 +135,9 @@ class MockGenerator {
         const arraySchema = schema;
         if (arraySchema.items) {
             for (let i = 0; i < itemCount; i++) {
-                result.push(this.generate(arraySchema.items));
+                // 각 배열 요소마다 고유한 경로 사용
+                const itemPath = path ? `${path}[${i}]` : `[${i}]`;
+                result.push(this.generateWithSeed(arraySchema.items, itemPath));
             }
         }
         return result;
@@ -124,10 +157,17 @@ class MockGenerator {
 }
 exports.MockGenerator = MockGenerator;
 /**
- * 편의를 위한 헬퍼 함수
+ * 편의를 위한 헬퍼 함수 (기존 호환성 유지)
  */
 function generateMockData(schema, options) {
     const generator = new MockGenerator(options);
     return generator.generate(schema);
+}
+/**
+ * 경로 기반 시드를 사용하는 헬퍼 함수
+ */
+function generateMockDataWithPath(schema, path, options) {
+    const generator = new MockGenerator(options);
+    return generator.generateWithSeed(schema, path);
 }
 //# sourceMappingURL=generator.js.map

@@ -1,6 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import { OpenAPISpec } from '../core/specLoader';
-import { generateMockData } from '../mock/generator';
+import { MockGenerator } from '../mock/generator';
 import { OpenAPIV3 } from 'openapi-types';
 
 export interface ServerOptions {
@@ -15,6 +15,9 @@ export function createMockServer(spec: OpenAPISpec, options: ServerOptions): Fas
   const app = Fastify({
     logger: false, // 간단한 로그로 시작
   });
+
+  // MockGenerator 인스턴스를 서버에서 공유하여 재사용
+  const mockGenerator = new MockGenerator({ seed: options.seed });
 
   // CORS 허용 (개발용) - 일단 제거하고 기본 기능 테스트
   // app.register(require('@fastify/cors'), {
@@ -58,7 +61,7 @@ export function createMockServer(spec: OpenAPISpec, options: ServerOptions): Fas
   if (spec.paths) {
     for (const [path, pathItem] of Object.entries(spec.paths)) {
       if (pathItem) {
-        registerPathRoutes(app, path, pathItem, spec, options);
+        registerPathRoutes(app, path, pathItem, spec, mockGenerator);
       }
     }
   }
@@ -74,7 +77,7 @@ function registerPathRoutes(
   path: string,
   pathItem: OpenAPIV3.PathItemObject,
   spec: OpenAPISpec,
-  options: ServerOptions
+  mockGenerator: MockGenerator
 ) {
   // 지원하는 HTTP 메서드들
   const methods = ['get', 'post', 'put', 'delete', 'patch'] as const;
@@ -82,7 +85,7 @@ function registerPathRoutes(
   for (const method of methods) {
     const operation = pathItem[method];
     if (operation) {
-      registerOperationRoute(app, method, path, operation, spec, options);
+      registerOperationRoute(app, method, path, operation, spec, mockGenerator);
     }
   }
 }
@@ -96,7 +99,7 @@ function registerOperationRoute(
   path: string,
   operation: OpenAPIV3.OperationObject,
   spec: OpenAPISpec,
-  options: ServerOptions
+  mockGenerator: MockGenerator
 ) {
   // Fastify 라우터 등록
   app.route({
@@ -108,8 +111,9 @@ function registerOperationRoute(
         const responseSchema = selectResponseSchema(operation);
 
         if (responseSchema) {
-          // Mock 데이터 생성
-          const mockData = generateMockData(responseSchema, { seed: options.seed });
+          // 경로 기반 시드를 사용하여 Mock 데이터 생성
+          const fullPath = `${method.toUpperCase()} ${path}`;
+          const mockData = mockGenerator.generateWithSeed(responseSchema, fullPath);
           reply.send(mockData);
         } else {
           // 응답 스키마가 없는 경우 빈 객체 반환
